@@ -10,10 +10,10 @@ import webbrowser
 import http.server
 import socketserver
 import time
+import subprocess
 
 PORT = 8765
 
-# When packaged by PyInstaller, files are in sys._MEIPASS
 if getattr(sys, "frozen", False):
     BASE_DIR = sys._MEIPASS
 else:
@@ -25,7 +25,7 @@ class SilentHandler(http.server.SimpleHTTPRequestHandler):
         super().__init__(*args, directory=BASE_DIR, **kwargs)
 
     def log_message(self, format, *args):
-        pass  # suppress console output
+        pass
 
 
 def start_server():
@@ -33,19 +33,33 @@ def start_server():
         httpd.serve_forever()
 
 
+def open_browser(url):
+    """Force Chrome or Edge — avoid Internet Explorer."""
+    browsers = [
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Mozilla Firefox\firefox.exe",
+        r"C:\Program Files (x86)\Mozilla Firefox\firefox.exe",
+    ]
+    for path in browsers:
+        if os.path.exists(path):
+            subprocess.Popen([path, url])
+            return
+    # fallback to system default
+    webbrowser.open(url)
+
+
 def main():
-    # Start local server in background thread
     server_thread = threading.Thread(target=start_server, daemon=True)
     server_thread.start()
 
-    # Small delay to let server start
     time.sleep(1.0)
 
-    # Open browser
     url = f"http://127.0.0.1:{PORT}/index.html"
-    webbrowser.open(url)
+    open_browser(url)
 
-    # Keep app alive using Event — no input() needed (fixes noconsole crash)
     stop_event = threading.Event()
     try:
         stop_event.wait()
