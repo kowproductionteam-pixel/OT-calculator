@@ -1,10 +1,6 @@
 """
 OT Calculator — Portable Launcher
 Developed by Mainul Islam
-
-Run this to start the app in your browser.
-Or build .exe:
-  pyinstaller --onefile --noconsole --add-data "index.html;." --add-data "assets;assets" --add-data "src;src" --name "OT_Calculator" launcher.py
 """
 
 import os
@@ -43,18 +39,17 @@ def main():
     server_thread.start()
 
     # Small delay to let server start
-    time.sleep(0.8)
+    time.sleep(1.0)
 
     # Open browser
     url = f"http://127.0.0.1:{PORT}/index.html"
-    print(f"Opening OT Calculator at {url}")
     webbrowser.open(url)
 
-    print("OT Calculator is running.")
-    print("Close this window to exit.")
+    # Keep app alive using Event — no input() needed (fixes noconsole crash)
+    stop_event = threading.Event()
     try:
-        input()
-    except (EOFError, KeyboardInterrupt):
+        stop_event.wait()
+    except KeyboardInterrupt:
         pass
 
 
