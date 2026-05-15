@@ -1,13 +1,12 @@
 /* ─────────────────────────────────────────
    OT Calculator  ·  by Mainul Islam
-   app.js
+   app.js  v1.1 — fixed OT rounding + Team column
 ───────────────────────────────────────── */
 
 "use strict";
 
-/* ── state ── */
-let employees  = [];
-let curFilter  = "All";
+let employees = [];
+let curFilter = "All";
 
 /* ── init ── */
 document.addEventListener("DOMContentLoaded", () => {
@@ -23,12 +22,7 @@ document.addEventListener("DOMContentLoaded", () => {
 /* ─────────────────────────────────────────
    NAVIGATION
 ───────────────────────────────────────── */
-const TITLES = {
-  dashboard: "Dashboard",
-  import:    "Data Import",
-  report:    "OT Report",
-  settings:  "Settings",
-};
+const TITLES = { dashboard:"Dashboard", import:"Data Import", report:"OT Report", settings:"Settings" };
 
 function goSection(name) {
   document.querySelectorAll(".section").forEach(s => s.classList.remove("active"));
@@ -37,16 +31,11 @@ function goSection(name) {
   document.querySelector(`.nav-item[data-section="${name}"]`).classList.add("active");
   document.getElementById("topbarTitle").textContent = TITLES[name] || name;
   closeSidebar();
-  window.scrollTo({ top: 0 });
+  window.scrollTo({ top:0 });
 }
-
 document.querySelectorAll(".nav-item").forEach(el => {
-  el.addEventListener("click", e => {
-    e.preventDefault();
-    goSection(el.dataset.section);
-  });
+  el.addEventListener("click", e => { e.preventDefault(); goSection(el.dataset.section); });
 });
-
 function toggleSidebar() {
   document.querySelector(".sidebar").classList.toggle("open");
   document.getElementById("overlay").classList.toggle("open");
@@ -85,11 +74,24 @@ function timeToMinutes(t) {
   return h * 60 + m;
 }
 
-function minsToDecimal(mins) {
+/*
+  OT round নিয়ম (প্রতিটি ঘন্টার অতিরিক্ত মিনিটের জন্য):
+  0-24 min  → 0      (count নেই)
+  25-54 min → 0.5    (আধা ঘন্টা)
+  55+ min   → 1      (পুরো ঘন্টা)
+  উদাহরণ: 1h 20m → 1 | 1h 30m → 1.5 | 1h 55m → 2 | 2h 25m → 2.5
+*/
+function minsToRoundedHours(mins) {
   if (!mins || mins <= 0) return "0";
-  const h = Math.floor(mins / 60), m = mins % 60;
-  if (m === 0) return String(h);
-  return (h + Math.round((m / 60) * 10) / 10).toFixed(1);
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  let frac = 0;
+  if (m >= 55)      frac = 1;
+  else if (m >= 25) frac = 0.5;
+  else              frac = 0;
+  const total = h + frac;
+  if (total === 0) return "0";
+  return Number.isInteger(total) ? String(total) : total.toFixed(1);
 }
 
 function minsToLabel(mins) {
@@ -126,21 +128,19 @@ function syncDutyFromInput() {
 function syncMinOT() {
   const v = document.getElementById("minOTRange").value;
   document.getElementById("minOT").value = v;
-  const h = Math.floor(v / 60), m = v % 60;
+  const h = Math.floor(v/60), m = v%60;
   document.getElementById("minOTVal").textContent = h > 0 ? (m ? `${h}h${m}m` : `${h}h`) : `${m}m`;
 }
 function syncMinOTFromInput() {
   const v = document.getElementById("minOT").value;
   document.getElementById("minOTRange").value = v;
-  const h = Math.floor(v / 60), m = v % 60;
+  const h = Math.floor(v/60), m = v%60;
   document.getElementById("minOTVal").textContent = h > 0 ? (m ? `${h}h${m}m` : `${h}h`) : `${m}m`;
 }
-
 function recalcAll() {
   employees = employees.map(e => ({
     ...e,
-    otMins: (e.status === "Present" && e.inTime && e.outTime)
-      ? calcOT(e.inTime, e.outTime) : 0,
+    otMins: (e.status === "Present" && e.inTime && e.outTime) ? calcOT(e.inTime, e.outTime) : 0,
   }));
   renderAll();
   showStatus("✓ Recalculated!", "green");
@@ -148,6 +148,8 @@ function recalcAll() {
 
 /* ─────────────────────────────────────────
    PASTE IMPORT
+   Team column detection:
+   Excel format: Name | ID | Designation | Team(ICS/TLS..) | Status | InTime | OutTime
 ───────────────────────────────────────── */
 function processPaste() {
   const raw = document.getElementById("pasteBox").value.trim();
@@ -171,13 +173,35 @@ function processPaste() {
     if (!name || name.length < 2) continue;
     if (/^(name|employee|sl|#|no\.)/i.test(name)) continue;
 
-    const id          = cols[1] || "—";
-    const designation = cols[2] || "—";
+    const id = cols[1] || "—";
+
+    /* 
+      Auto-detect Team column:
+      If col[2] looks like a short team code (ICS, TLS, LHG, ATS, QC etc.) → it's the team
+      Otherwise col[2] is designation and team is empty
+    */
+    let designation = "—", team = "—";
+    const TEAM_PATTERN = /^[A-Z]{2,6}$/;  // 2-6 uppercase letters = team code
+
+    if (cols[2] && TEAM_PATTERN.test(cols[2])) {
+      // col[2] is team code
+      team = cols[2];
+      designation = cols[3] || "—";
+    } else if (cols[3] && TEAM_PATTERN.test(cols[3])) {
+      // col[3] is team code
+      designation = cols[2] || "—";
+      team = cols[3];
+    } else {
+      // no team code found
+      designation = cols[2] || "—";
+      team = "—";
+    }
+
     let status = "Day Off", inTime = "", outTime = "";
 
     for (let i = 3; i < cols.length; i++) {
       const c = cols[i];
-      if (/present/i.test(c))    status = "Present";
+      if (/^present$/i.test(c))     status = "Present";
       else if (/day.?off/i.test(c)) status = "Day Off";
       else if (/\d{1,2}:\d{2}.*[AP]M/i.test(c)) {
         const cl = c.replace(/(\d{1,2}:\d{2}):\d{2}(\s*[AP]M)/i, "$1$2");
@@ -185,9 +209,8 @@ function processPaste() {
       }
     }
 
-    const otMins = (status === "Present" && inTime && outTime)
-      ? calcOT(inTime, outTime) : 0;
-    employees.push({ name, id, designation, shift: currentShift, status, inTime, outTime, otMins });
+    const otMins = (status === "Present" && inTime && outTime) ? calcOT(inTime, outTime) : 0;
+    employees.push({ name, id, designation, team, shift: currentShift, status, inTime, outTime, otMins });
     added++;
   }
 
@@ -203,7 +226,6 @@ function processPaste() {
 async function handleFileUpload(event) {
   const files = Array.from(event.target.files);
   if (!files.length) return;
-
   const prog = document.getElementById("aiProgress");
   prog.style.display = "flex";
 
@@ -213,7 +235,6 @@ async function handleFileUpload(event) {
       r.onload = () => res(r.result.split(",")[1]);
       r.readAsDataURL(file);
     });
-
     try {
       const resp = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
@@ -224,12 +245,13 @@ async function handleFileUpload(event) {
           messages: [{
             role: "user",
             content: [
-              { type: "image", source: { type: "base64", media_type: file.type || "image/png", data: b64 } },
+              { type: "image", source: { type:"base64", media_type: file.type || "image/png", data: b64 } },
               { type: "text", text: `Extract all employee attendance rows from this Excel screenshot.
 Return ONLY a JSON array. Each object must have:
 - name (string)
 - id (string)
 - designation (string)
+- team (string — e.g. "ICS", "TLS", "LHG", "ATS", or "" if not present)
 - shift: "Morning" or "Evening" (detect from section header)
 - status: "Present" or "Day Off"
 - inTime (string e.g. "06:52 AM", or "" if absent)
@@ -239,29 +261,23 @@ No markdown, no explanation. Only the JSON array.` }
           }],
         }),
       });
-
       const data  = await resp.json();
       const text  = data.content.map(i => i.text || "").join("");
-      const clean = text.replace(/```json|```/g, "").trim();
-      const rows  = JSON.parse(clean);
-
+      const rows  = JSON.parse(text.replace(/```json|```/g, "").trim());
       let added = 0;
       for (const row of rows) {
         const otMins = (row.status === "Present" && row.inTime && row.outTime)
           ? calcOT(row.inTime, row.outTime) : 0;
-        employees.push({ ...row, otMins });
+        employees.push({ ...row, team: row.team || "—", otMins });
         added++;
       }
-
       showStatus(`✓ ${added} জন import হয়েছে (AI)`, "green");
       renderAll();
-
     } catch (err) {
       console.error(err);
       showStatus("⚠ AI পড়তে ব্যর্থ। Paste বা Manual ব্যবহার করুন।", "red");
     }
   }
-
   prog.style.display = "none";
   event.target.value = "";
 }
@@ -272,43 +288,34 @@ No markdown, no explanation. Only the JSON array.` }
 function addManualRow() {
   const name = document.getElementById("mName").value.trim();
   if (!name) { showStatus("⚠ নাম দিন", "red"); return; }
-
-  const id    = document.getElementById("mId").value.trim()  || "—";
-  const des   = document.getElementById("mDes").value.trim() || "—";
+  const id    = document.getElementById("mId").value.trim()   || "—";
+  const des   = document.getElementById("mDes").value.trim()  || "—";
+  const team  = document.getElementById("mTeam").value.trim() || "—";
   const shift = document.getElementById("mShift").value;
   const inRaw = document.getElementById("mIn").value;
   const ouRaw = document.getElementById("mOut").value;
-
   const fmt = raw => {
     if (!raw) return "";
-    const [h, m] = raw.split(":");
+    const [h,m] = raw.split(":");
     const ap = parseInt(h) >= 12 ? "PM" : "AM";
     const hr = parseInt(h) % 12 || 12;
     return `${hr}:${m} ${ap}`;
   };
-
   const inTime  = fmt(inRaw);
   const outTime = fmt(ouRaw);
   const status  = (inTime && outTime) ? "Present" : "Day Off";
   const otMins  = status === "Present" ? calcOT(inTime, outTime) : 0;
-
-  employees.push({ name, id, designation: des, shift, status, inTime, outTime, otMins });
-  ["mName","mId","mDes","mIn","mOut"].forEach(id => document.getElementById(id).value = "");
+  employees.push({ name, id, designation: des, team, shift, status, inTime, outTime, otMins });
+  ["mName","mId","mDes","mTeam","mIn","mOut"].forEach(id => document.getElementById(id).value = "");
   showStatus("✓ যোগ হয়েছে", "green");
   renderAll();
 }
 
 /* ─────────────────────────────────────────
-   DELETE
+   DELETE / FILTER
 ───────────────────────────────────────── */
-function deleteRow(idx) {
-  employees.splice(idx, 1);
-  renderAll();
-}
+function deleteRow(idx) { employees.splice(idx, 1); renderAll(); }
 
-/* ─────────────────────────────────────────
-   FILTER
-───────────────────────────────────────── */
 function filterShift(val, btn) {
   curFilter = val;
   document.querySelectorAll(".rf-btn").forEach(b => b.classList.remove("active"));
@@ -319,26 +326,18 @@ function filterShift(val, btn) {
 /* ─────────────────────────────────────────
    RENDER ALL
 ───────────────────────────────────────── */
-function renderAll() {
-  renderStats();
-  renderPreview();
-  renderReport();
-}
+function renderAll() { renderStats(); renderPreview(); renderReport(); }
 
-/* stats */
 function renderStats() {
   const minOT   = parseInt(document.getElementById("minOT").value) || 60;
   const present = employees.filter(e => e.status === "Present");
   const withOT  = employees.filter(e => e.otMins >= minOT);
-  const totalOT = withOT.reduce((s, e) => s + e.otMins, 0);
-
+  const totalOT = withOT.reduce((s,e) => s + e.otMins, 0);
   document.getElementById("s-total").textContent   = employees.length;
   document.getElementById("s-present").textContent = present.length;
   document.getElementById("s-ot").textContent      = withOT.length;
-
-  const h = Math.floor(totalOT / 60), m = totalOT % 60;
+  const h = Math.floor(totalOT/60), m = totalOT%60;
   document.getElementById("s-total-ot").textContent = `${h}h ${m}m`;
-
   const nudge = document.getElementById("importNudge");
   if (employees.length > 0) {
     nudge.style.display = "flex";
@@ -348,18 +347,14 @@ function renderStats() {
   }
 }
 
-/* preview table (import page) */
 function renderPreview() {
   const wrap = document.getElementById("importPreview");
   const body = document.getElementById("previewBody");
-
   if (employees.length === 0) { wrap.style.display = "none"; return; }
   wrap.style.display = "block";
-  document.getElementById("previewCount").textContent =
-    `${employees.length} জন import হয়েছে`;
-
-  body.innerHTML = employees.map((e, i) => {
-    const minOT = parseInt(document.getElementById("minOT").value) || 60;
+  document.getElementById("previewCount").textContent = `${employees.length} জন import হয়েছে`;
+  const minOT = parseInt(document.getElementById("minOT").value) || 60;
+  body.innerHTML = employees.map((e,i) => {
     const otBadge = e.otMins >= minOT
       ? `<span class="badge badge-ot">${minsToLabel(e.otMins)}</span>`
       : `<span style="color:var(--text3)">—</span>`;
@@ -370,12 +365,13 @@ function renderPreview() {
       ? `<span class="badge badge-morning">Morning</span>`
       : `<span class="badge badge-evening">Evening</span>`;
     return `<tr>
-      <td class="sl-num">${i + 1}</td>
+      <td class="sl-num">${i+1}</td>
       <td class="name-cell">${e.name}</td>
       <td class="id-cell">${e.id}</td>
+      <td class="id-cell">${e.team || "—"}</td>
       <td>${shBadge}</td>
       <td>${stBadge}</td>
-      <td class="time-cell">${e.inTime  || "—"}</td>
+      <td class="time-cell">${e.inTime || "—"}</td>
       <td class="time-cell">${e.outTime || "—"}</td>
       <td>${otBadge}</td>
       <td>
@@ -387,59 +383,50 @@ function renderPreview() {
   }).join("");
 }
 
-/* ── REPORT TABLE ── */
 function renderReport() {
-  const minOT    = parseInt(document.getElementById("minOT").value) || 60;
-  const empty    = document.getElementById("reportEmpty");
-  const tableWrap= document.getElementById("reportTableWrap");
-  const body     = document.getElementById("reportBody");
-  const foot     = document.getElementById("reportFoot");
+  const minOT     = parseInt(document.getElementById("minOT").value) || 60;
+  const empty     = document.getElementById("reportEmpty");
+  const tableWrap = document.getElementById("reportTableWrap");
+  const body      = document.getElementById("reportBody");
+  const foot      = document.getElementById("reportFoot");
 
   let pool = employees.filter(e => e.otMins >= minOT);
   if (curFilter !== "All") pool = pool.filter(e => e.shift === curFilter);
-  const sorted = [...pool].sort((a, b) => b.otMins - a.otMins);
+  const sorted = [...pool].sort((a,b) => b.otMins - a.otMins);
 
   if (sorted.length === 0) {
-    empty.style.display     = "block";
-    tableWrap.style.display = "none";
-    return;
+    empty.style.display = "block"; tableWrap.style.display = "none"; return;
   }
-  empty.style.display     = "none";
-  tableWrap.style.display = "block";
+  empty.style.display = "none"; tableWrap.style.display = "block";
 
   const maxOT = sorted[0].otMins;
 
-  body.innerHTML = sorted.map((e, i) => {
-    const pct  = maxOT > 0 ? Math.round((e.otMins / maxOT) * 100) : 0;
-    const dec  = minsToDecimal(e.otMins);
+  body.innerHTML = sorted.map((e,i) => {
+    const pct = maxOT > 0 ? Math.round((e.otMins / maxOT) * 100) : 0;
+    const rounded = minsToRoundedHours(e.otMins);
     return `<tr>
-      <td class="sl-num">${i + 1}</td>
+      <td class="sl-num">${i+1}</td>
       <td class="name-cell">${e.name}</td>
       <td class="id-cell">${e.id}</td>
-      <td>
-        ${e.shift === "Morning"
-          ? `<span class="badge badge-morning">Morning</span>`
-          : `<span class="badge badge-evening">Evening</span>`}
-      </td>
+      <td class="id-cell">${e.team || "—"}</td>
       <td class="time-cell">${e.inTime  || "—"}</td>
       <td class="time-cell">${e.outTime || "—"}</td>
       <td>
         <div class="ot-bar-wrap">
           <div class="ot-bar"><div class="ot-bar-fill" style="width:${pct}%"></div></div>
-          <span class="ot-cell">${dec}</span>
+          <span class="ot-cell">${rounded}</span>
         </div>
       </td>
     </tr>`;
   }).join("");
 
-  /* footer totals */
-  const totalOT = sorted.reduce((s, e) => s + e.otMins, 0);
-  const totalDec = minsToDecimal(totalOT);
+  const totalOT  = sorted.reduce((s,e) => s + e.otMins, 0);
+  const totalRnd = minsToRoundedHours(totalOT);
   foot.innerHTML = `<tr>
     <td colspan="6" style="text-align:right;color:var(--text2);font-size:12px;">
       ${sorted.length} জন কর্মী · মোট OT:
     </td>
-    <td class="ot-cell">${totalDec}h</td>
+    <td class="ot-cell">${totalRnd}h</td>
   </tr>`;
 }
 
@@ -450,36 +437,24 @@ function copyTableForExcel() {
   const minOT = parseInt(document.getElementById("minOT").value) || 60;
   let pool = employees.filter(e => e.otMins >= minOT);
   if (curFilter !== "All") pool = pool.filter(e => e.shift === curFilter);
-  const sorted = [...pool].sort((a, b) => b.otMins - a.otMins);
+  const sorted = [...pool].sort((a,b) => b.otMins - a.otMins);
 
   const header = ["SL","Name","ID","Team","Join","Leave","OT Hours Per Person"].join("\t");
-  const rows   = sorted.map((e, i) => [
-    i + 1,
-    e.name,
-    e.id,
-    e.shift,
-    e.inTime  || "",
-    e.outTime || "",
-    minsToDecimal(e.otMins),
+  const rows   = sorted.map((e,i) => [
+    i+1, e.name, e.id, e.team || "—", e.inTime || "", e.outTime || "", minsToRoundedHours(e.otMins),
   ].join("\t"));
 
   const tsv = [header, ...rows].join("\n");
-
   const doFeedback = () => {
     const fb = document.getElementById("copyFeedback");
     fb.style.display = "flex";
     setTimeout(() => { fb.style.display = "none"; }, 3500);
   };
-
   navigator.clipboard.writeText(tsv)
     .then(doFeedback)
     .catch(() => {
-      const ta = Object.assign(document.createElement("textarea"),
-        { value: tsv, style: "position:absolute;left:-9999px" });
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      document.body.removeChild(ta);
+      const ta = Object.assign(document.createElement("textarea"), { value:tsv, style:"position:absolute;left:-9999px" });
+      document.body.appendChild(ta); ta.select(); document.execCommand("copy"); document.body.removeChild(ta);
       doFeedback();
     });
 }
@@ -492,31 +467,20 @@ function exportCSV() {
   const date  = document.getElementById("reportDate").value;
   let pool    = employees.filter(e => e.otMins >= minOT);
   if (curFilter !== "All") pool = pool.filter(e => e.shift === curFilter);
-  const sorted = [...pool].sort((a, b) => b.otMins - a.otMins);
-
+  const sorted = [...pool].sort((a,b) => b.otMins - a.otMins);
   const lines = [
     "SL,Name,ID,Team,Join,Leave,OT Hours Per Person",
-    ...sorted.map((e, i) =>
-      `${i+1},"${e.name}","${e.id}","${e.shift}","${e.inTime}","${e.outTime}","${minsToDecimal(e.otMins)}"`
-    ),
+    ...sorted.map((e,i) =>
+      `${i+1},"${e.name}","${e.id}","${e.team||""}","${e.inTime}","${e.outTime}","${minsToRoundedHours(e.otMins)}"`),
   ];
-
   const a = document.createElement("a");
-  a.href     = URL.createObjectURL(new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" }));
+  a.href = URL.createObjectURL(new Blob([lines.join("\n")], { type:"text/csv;charset=utf-8;" }));
   a.download = `OT_Report_${date}.csv`;
   a.click();
 }
 
-/* ─────────────────────────────────────────
-   PRINT
-───────────────────────────────────────── */
-function printReport() {
-  window.print();
-}
+function printReport() { window.print(); }
 
-/* ─────────────────────────────────────────
-   CLEAR ALL
-───────────────────────────────────────── */
 function clearAll() {
   if (!confirm("সব data মুছে ফেলবেন?")) return;
   employees = [];
@@ -524,9 +488,6 @@ function clearAll() {
   showStatus("✓ সব data মুছে গেছে", "green");
 }
 
-/* ─────────────────────────────────────────
-   STATUS MESSAGE
-───────────────────────────────────────── */
 function showStatus(msg, type = "green") {
   const el = document.getElementById("statusMsg");
   el.textContent = msg;
